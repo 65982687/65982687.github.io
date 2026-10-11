@@ -99,6 +99,168 @@
         }
     }
 
+    function splitConsentItems(value) {
+        if (!value) return [
+            "この先に強い表現が含まれることを理解しました",
+            "自分の判断で閲覧します",
+            "必要になったら閲覧を中止します"
+        ];
+
+        return value.split("|").map(function (item) {
+            return item.trim();
+        }).filter(Boolean);
+    }
+
+    function consentStorageKey(gate, index) {
+        var key = gate.dataset.consentKey || gate.id || String(index + 1);
+        return "note-consent:" + window.location.pathname + ":" + key;
+    }
+
+    function getConsentStorage(mode) {
+        if (mode === "local") return localStorage;
+        if (mode === "session") return sessionStorage;
+        return null;
+    }
+
+    function createElement(name, className, text) {
+        var element = document.createElement(name);
+        if (className) element.className = className;
+        if (text) element.textContent = text;
+        return element;
+    }
+
+    function unlockConsentGate(gate, key, storage) {
+        gate.dataset.consentState = "unlocked";
+        gate.setAttribute("aria-label", "同意済みの内容");
+
+        if (storage) {
+            try {
+                storage.setItem(key, "accepted");
+            } catch (_) {
+                // Consent still applies for the current DOM when storage is unavailable.
+            }
+        }
+
+        reportPrivateDocumentHeight();
+    }
+
+    function initConsentGate(gate, index) {
+        if (gate.dataset.consentReady === "true") return;
+
+        var remember = gate.dataset.consentRemember || "";
+        var storage;
+        try {
+            storage = getConsentStorage(remember);
+        } catch (_) {
+            storage = null;
+        }
+
+        var key = consentStorageKey(gate, index);
+        try {
+            if (storage && storage.getItem(key) === "accepted") {
+                gate.dataset.consentState = "unlocked";
+                gate.dataset.consentReady = "true";
+                return;
+            }
+        } catch (_) {
+            storage = null;
+        }
+
+        var content = createElement("div", "consent-gate-content");
+        while (gate.firstChild) content.appendChild(gate.firstChild);
+
+        var title = gate.dataset.consentTitle || "内容確認";
+        var lead = gate.dataset.consentLead || "この先の内容を表示するには、すべての項目に同意してください。";
+        var buttonLabel = gate.dataset.consentButton || "同意して表示";
+        var items = splitConsentItems(gate.dataset.consentItems);
+
+        var panel = createElement("div", "consent-gate-panel");
+        var panelTitle = createElement("strong", "consent-gate-title", title);
+        var panelLead = createElement("p", "consent-gate-lead", lead);
+        panel.appendChild(panelTitle);
+        panel.appendChild(panelLead);
+        var list = createElement("div", "consent-checklist");
+        var acceptButton = createElement("button", "consent-accept", buttonLabel);
+        var actions = createElement("div", "consent-gate-actions");
+
+        acceptButton.type = "button";
+        acceptButton.disabled = true;
+
+        items.forEach(function (item, itemIndex) {
+            var label = createElement("label", "consent-check");
+            var checkbox = document.createElement("input");
+            var span = createElement("span", "", item);
+            checkbox.type = "checkbox";
+            checkbox.name = "consent-" + index + "-" + itemIndex;
+            label.appendChild(checkbox);
+            label.appendChild(span);
+            list.appendChild(label);
+        });
+
+        function refreshAcceptButton() {
+            var checkboxes = list.querySelectorAll("input[type='checkbox']");
+            var allChecked = Array.prototype.every.call(checkboxes, function (checkbox) {
+                return checkbox.checked;
+            });
+            acceptButton.disabled = !allChecked;
+        }
+
+        list.addEventListener("change", refreshAcceptButton);
+        acceptButton.addEventListener("click", function () {
+            if (acceptButton.disabled) return;
+            unlockConsentGate(gate, key, storage);
+        });
+
+        actions.appendChild(acceptButton);
+        panel.appendChild(list);
+        panel.appendChild(actions);
+
+        gate.appendChild(panel);
+        gate.appendChild(content);
+        gate.dataset.consentState = "locked";
+        gate.dataset.consentReady = "true";
+        gate.setAttribute("aria-label", "同意が必要な内容");
+        refreshAcceptButton();
+    }
+
+    function initConsentGates() {
+        document.querySelectorAll(".consent-gate").forEach(initConsentGate);
+    }
+
+    function initReveals() {
+        document.querySelectorAll(".reveal").forEach(function (gate, index) {
+            if (gate.dataset.revealReady === "true") return;
+            var warning = Array.from(gate.children).find(function (child) {
+                return child.classList.contains("reveal-warning");
+            });
+            if (!warning) warning = createElement("div", "reveal-warning", "続きを表示しますか？");
+            var content = createElement("div", "reveal-content");
+            content.id = "reveal-content-" + index;
+            content.tabIndex = -1;
+            content.hidden = true;
+            Array.from(gate.childNodes).forEach(function (child) {
+                if (child !== warning) content.appendChild(child);
+            });
+            var panel = createElement("div", "reveal-panel");
+            var button = createElement("button", "consent-accept", gate.dataset.revealButton || "同意して表示");
+            button.type = "button";
+            button.setAttribute("aria-controls", content.id);
+            button.setAttribute("aria-expanded", "false");
+            panel.appendChild(warning);
+            panel.appendChild(button);
+            gate.appendChild(panel);
+            gate.appendChild(content);
+            gate.dataset.revealReady = "true";
+            button.addEventListener("click", function () {
+                content.hidden = false;
+                button.setAttribute("aria-expanded", "true");
+                panel.hidden = true;
+                content.focus({ preventScroll: true });
+                reportPrivateDocumentHeight();
+            });
+        });
+    }
+
     function setTheme(theme, persist) {
         if (!isTheme(theme)) return;
         root.dataset.theme = theme;
@@ -119,6 +281,8 @@
     }
 
     document.addEventListener("DOMContentLoaded", function () {
+        initConsentGates();
+        initReveals();
         document.querySelectorAll("iframe.private-content").forEach(function (frame) {
             frame.addEventListener("load", function () {
                 stylePrivateFrame(frame, root.dataset.theme);
